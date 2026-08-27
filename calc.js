@@ -1,13 +1,15 @@
 // Work time calculations (mirrors Flutter work_calculator.dart)
 
 export const WORK_TYPES = {
-  normal:       { label: '근무일',   color: '#1976d2' },
-  annualLeave:  { label: '연차',     color: '#388e3c' },
-  halfDay:      { label: '반차',     color: '#f57c00' },
-  businessTrip: { label: '출장',     color: '#7b1fa2' },
-  holidayWork:  { label: '휴일근무', color: '#d32f2f' },
-  remote:       { label: '재택근무', color: '#00796b' },
-  holiday:      { label: '휴일',     color: '#9e9e9e' },
+  normal:            { label: '근무일',    color: '#1976d2' },
+  annualLeave:       { label: '연차',      color: '#388e3c' },
+  halfDay:           { label: '반차',      color: '#f57c00' },
+  quarterDay:        { label: '반반차',    color: '#fb8c00' },
+  doubleQuarterDay:  { label: '반반차×2',  color: '#e64a19' },
+  businessTrip:      { label: '출장',      color: '#7b1fa2' },
+  holidayWork:       { label: '휴일근무',  color: '#d32f2f' },
+  remote:            { label: '재택근무',  color: '#00796b' },
+  holiday:           { label: '휴일',      color: '#9e9e9e' },
 };
 
 // 'HH:MM' → minutes (int), null on failure
@@ -48,6 +50,10 @@ export function baseWorkMinutes(workType) {
       return 8 * 60;
     case 'halfDay':
       return 4 * 60;
+    case 'quarterDay':
+      return 6 * 60;
+    case 'doubleQuarterDay':
+      return 4 * 60;
     default:
       return 0;
   }
@@ -61,8 +67,8 @@ export function calcDailyWork(record) {
   if (ci === null || co === null) return null;
   let worked = co - ci;
   if (worked < 0) return null;
-  // 1h lunch deduction for normal/businessTrip/remote
-  if (['normal', 'businessTrip', 'remote'].includes(record.workType)) {
+  // 1h lunch deduction for normal/businessTrip/remote/quarterDay/doubleQuarterDay
+  if (['normal', 'businessTrip', 'remote', 'quarterDay', 'doubleQuarterDay'].includes(record.workType)) {
     worked = Math.max(0, worked - 60);
   }
   return worked;
