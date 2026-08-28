@@ -1150,13 +1150,30 @@ async function renderSettings(main) {
     <div class="card">
       <div class="card-title" style="margin-bottom:4px">앱 정보</div>
       <div style="font-size:13px;color:var(--text-2)">근무시간 관리 PWA</div>
-      <div style="font-size:12px;color:var(--text-2);margin-top:2px">데이터는 브라우저 IndexedDB에 저장됩니다</div>
+      <div style="font-size:12px;color:var(--text-2);margin-top:2px">데이터는 브라우저 IndexedDB에 저장됩니다 (캐시 삭제와 무관)</div>
+      <button id="btn-sw-update" class="btn btn-secondary" style="margin-top:12px;height:40px;font-size:14px">최신 버전으로 업데이트</button>
     </div>`;
 
   main.insertAdjacentHTML('beforeend', rulesHtml);
 
   document.getElementById('btn-export').onclick = exportCSV;
   document.getElementById('btn-import').onclick = () => document.getElementById('import-file-input').click();
+  document.getElementById('btn-sw-update').onclick = async () => {
+    const btn = document.getElementById('btn-sw-update');
+    btn.textContent = '확인 중...'; btn.disabled = true;
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg) await reg.update();
+      }
+      await caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k))));
+      btn.textContent = '완료! 재시작합니다...';
+      setTimeout(() => window.location.reload(true), 800);
+    } catch {
+      btn.textContent = '최신 버전으로 업데이트'; btn.disabled = false;
+      alert('업데이트 중 오류가 발생했습니다. 페이지를 직접 새로고침해 주세요.');
+    }
+  };
   document.getElementById('import-file-input').onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
