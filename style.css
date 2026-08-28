@@ -216,6 +216,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   background: none; color: var(--text-2); font-size: 14px; cursor: pointer; margin-top: 8px;
 }
 
+/* Holiday tabs */
+.holi-tabs { display:flex; gap:4px; margin-bottom:10px; background:var(--surface); border-radius:12px; padding:4px; box-shadow:var(--shadow); }
+.holi-tab-btn { flex:1; height:36px; border:none; border-radius:8px; font-size:14px; font-weight:500; cursor:pointer; background:none; color:var(--text-2); transition:all 0.15s; }
+.holi-tab-btn.active { background:var(--primary); color:#fff; font-weight:700; }
+
 /* Settings */
 .settings-item { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid var(--border); }
 .settings-item:last-child { border-bottom: none; }

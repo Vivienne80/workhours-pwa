@@ -11,6 +11,8 @@ let plannedCheckout = null;   // 퇴근 예측 카드 예정 퇴근시각
 let selectedCalendarDate = null; // 달력에서 선택한 날짜
 let monthlyYear = new Date().getFullYear();
 let monthlyMonth = new Date().getMonth() + 1;
+let holidaysYear = new Date().getFullYear();
+let holidaysTab = 0; // 0: 법정공휴일, 1: 회사휴일
 
 // ─── Boot ─────────────────────────────────────────────
 async function boot() {
@@ -58,9 +60,9 @@ async function renderView(view) {
       await renderCalendar(main);
       break;
     case 'holidays':
-      title.textContent = '회사 휴일';
-      action.textContent = '+ 추가';
-      action.onclick = showAddHoliday;
+      title.textContent = '공휴일';
+      action.textContent = holidaysTab === 1 ? '+ 추가' : '';
+      action.onclick = holidaysTab === 1 ? showAddHoliday : null;
       await renderHolidays(main);
       break;
     case 'monthly':
@@ -695,29 +697,105 @@ async function renderCalendar(main) {
 }
 
 // ─── HOLIDAYS ─────────────────────────────────────────
-async function renderHolidays(main) {
-  const holidays = await db.getCompanyHolidays();
-  const sorted = Object.entries(holidays).sort((a,b) => a[0].localeCompare(b[0]));
+function _holiLeadBox(dateStr, isPast, isCompany) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const wd = d.getDay();
+  const wdColor = wd===6?'#1976d2':(wd===0?'#c62828':'var(--text-2)');
+  const bg = isPast ? 'var(--border)' : (isCompany ? '#f3e5f5' : '#fff0f0');
+  const numColor = isPast ? 'var(--text-2)' : (isCompany ? '#7b1fa2' : '#c62828');
+  return `<div style="width:44px;height:44px;background:${bg};border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0">
+    <span style="font-size:12px;font-weight:700;color:${numColor}">${d.getMonth()+1}/${d.getDate()}</span>
+    <span style="font-size:10px;color:${wdColor}">${weekdayLabel(d)}</span>
+  </div>`;
+}
 
-  let html = `<div class="card">`;
-  if (sorted.length === 0) {
-    html += `<div style="color:var(--text-2);text-align:center;padding:20px 0">등록된 회사 휴일이 없습니다</div>`;
-  } else {
-    sorted.forEach(([date, name]) => {
-      const d = new Date(date + 'T00:00:00');
-      const label = `${d.getMonth()+1}월 ${d.getDate()}일 (${weekdayLabel(d)})`;
-      html += `
-        <div class="holi-item">
-          <div>
-            <div class="holi-date">${label}</div>
-            <div class="holi-name">${name}</div>
-          </div>
-          <button class="holi-del" data-date="${date}">✕</button>
-        </div>`;
+async function renderHolidays(main) {
+  const todayStr = dateKey(new Date());
+
+  let html = `<div class="holi-tabs">
+    <button class="holi-tab-btn ${holidaysTab===0?'active':''}" data-tab="0">법정 공휴일</button>
+    <button class="holi-tab-btn ${holidaysTab===1?'active':''}" data-tab="1">회사 휴일</button>
+  </div>`;
+
+  if (holidaysTab === 0) {
+    const yearItems = Object.entries(KOREAN_HOLIDAYS)
+      .filter(([k]) => k.startsWith(`${holidaysYear}-`))
+      .sort((a,b) => a[0].localeCompare(b[0]));
+
+    html += `<div class="card" style="margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <select id="holi-year-sel" style="height:32px;border:1.5px solid var(--border);border-radius:8px;padding:0 8px;background:var(--bg);color:var(--text);font-size:14px">
+          ${[2022,2023,2024,2025,2026,2027,2028,2029,2030].map(y=>`<option value="${y}"${y===holidaysYear?' selected':''}>${y}년</option>`).join('')}
+        </select>
+        <span style="margin-left:auto;font-size:13px;font-weight:600;color:#c62828">법정 공휴일 ${yearItems.length}일</span>
+      </div>
+    </div>`;
+
+    html += `<div class="card">`;
+    yearItems.forEach(([dateStr, name]) => {
+      const isPast = dateStr < todayStr;
+      const isToday = dateStr === todayStr;
+      const diff = Math.round((new Date(dateStr+'T00:00:00') - new Date(todayStr+'T00:00:00')) / 86400000);
+      const dTag = isToday ? `<span style="font-size:12px;color:var(--primary);font-weight:600">오늘</span>`
+        : (!isPast ? `<span style="font-size:12px;color:#c62828;font-weight:500">D-${diff}</span>` : '');
+      html += `<div class="holi-item" style="opacity:${isPast?'0.5':'1'}">
+        <div style="display:flex;align-items:center;gap:12px">
+          ${_holiLeadBox(dateStr, isPast, false)}
+          <span style="font-size:14px">${name}</span>
+        </div>
+        ${dTag}
+      </div>`;
     });
+    html += `</div>`;
+  } else {
+    const holidays = await db.getCompanyHolidays();
+    const sorted = Object.entries(holidays).sort((a,b) => a[0].localeCompare(b[0]));
+
+    html += `<div class="card">`;
+    if (sorted.length === 0) {
+      html += `<div style="color:var(--text-2);text-align:center;padding:24px 0">
+        <div style="font-size:32px;margin-bottom:8px">🏢</div>
+        <div>등록된 회사 휴일이 없습니다</div>
+        <div style="font-size:12px;margin-top:4px">+ 추가 버튼으로 추가하세요</div>
+      </div>`;
+    } else {
+      sorted.forEach(([dateStr, name]) => {
+        const isPast = dateStr < todayStr;
+        const isToday = dateStr === todayStr;
+        const diff = Math.round((new Date(dateStr+'T00:00:00') - new Date(todayStr+'T00:00:00')) / 86400000);
+        const dTag = isToday ? `<span style="font-size:12px;color:var(--primary);font-weight:600">오늘</span>`
+          : (!isPast ? `<span style="font-size:12px;color:#7b1fa2;font-weight:500">D-${diff}</span>` : '');
+        html += `<div class="holi-item" style="opacity:${isPast?'0.5':'1'}">
+          <div style="display:flex;align-items:center;gap:12px">
+            ${_holiLeadBox(dateStr, isPast, true)}
+            <span style="font-size:14px">${name}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${dTag}
+            <button class="holi-del" data-date="${dateStr}">✕</button>
+          </div>
+        </div>`;
+      });
+    }
+    html += `</div>`;
   }
-  html += `</div>`;
+
   main.innerHTML = html;
+
+  main.querySelectorAll('.holi-tab-btn').forEach(btn => {
+    btn.onclick = () => {
+      holidaysTab = parseInt(btn.dataset.tab);
+      const action = document.getElementById('header-action');
+      action.textContent = holidaysTab === 1 ? '+ 추가' : '';
+      action.onclick = holidaysTab === 1 ? showAddHoliday : null;
+      renderHolidays(main);
+    };
+  });
+
+  const yearSel = main.querySelector('#holi-year-sel');
+  if (yearSel) {
+    yearSel.onchange = () => { holidaysYear = parseInt(yearSel.value); renderHolidays(main); };
+  }
 
   main.querySelectorAll('.holi-del').forEach(btn => {
     btn.onclick = async () => {
