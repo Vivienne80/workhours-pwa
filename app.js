@@ -84,7 +84,8 @@ function startRealtimeTimer() {
 async function renderHome(main) {
   const now = new Date();
   const today = dateKey(now);
-  const rec = await db.getRecord(today) || { date: today, workType: 'normal' };
+  const defaultType = isHoliday(now) ? 'holiday' : 'normal';
+  const rec = await db.getRecord(today) || { date: today, workType: defaultType };
   const monthlyOT = await calcMonthlyOvertimeToYesterday();
   const weekly = await calcWeekly();
 
@@ -559,7 +560,9 @@ async function renderCalendar(main) {
   main.querySelectorAll('.cal-cell[data-date]').forEach(cell => {
     cell.onclick = async () => {
       const k = cell.dataset.date;
-      const r = recMap[k] || { date: k, workType: 'normal' };
+      const cellDate = new Date(k + 'T00:00:00');
+      const cellDefault = isHoliday(cellDate) ? 'holiday' : 'normal';
+      const r = recMap[k] || { date: k, workType: cellDefault };
       showRecordEdit(k, r);
     };
   });
