@@ -1,4 +1,4 @@
-const CACHE = 'workhours-v3';
+const CACHE = 'workhours-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -25,7 +25,14 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
+  // HTML·JS·CSS는 네트워크 우선 (최신 버전 보장), 오프라인 시 캐시 폴백
   e.respondWith(
-    caches.match(e.request).then(r => r || fetch(e.request))
+    fetch(e.request)
+      .then(r => {
+        const clone = r.clone();
+        caches.open(CACHE).then(c => c.put(e.request, clone));
+        return r;
+      })
+      .catch(() => caches.match(e.request))
   );
 });
