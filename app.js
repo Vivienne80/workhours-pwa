@@ -52,6 +52,10 @@ async function renderView(view) {
       action.onclick = showAddHoliday;
       await renderHolidays(main);
       break;
+    case 'leave':
+      title.textContent = '연차';
+      await renderLeave(main);
+      break;
     case 'settings':
       title.textContent = '설정';
       await renderSettings(main);
@@ -341,6 +345,8 @@ function showRecordEdit(date, rec) {
     `<button class="wt-btn ${k === workType ? 'selected' : ''}" data-wt="${k}">${v.label}</button>`
   ).join('');
 
+  const tripDest = rec.tripDestination || '';
+
   const modalHtml = `
     <button class="modal-close" id="modal-close">✕</button>
     <div class="modal-title">${title}</div>
@@ -356,6 +362,10 @@ function showRecordEdit(date, rec) {
     <div class="form-group">
       <label class="form-label">퇴근</label>
       <input class="form-input" type="time" id="edit-checkout" value="${rec.checkOut || ''}">
+    </div>
+    <div class="form-group" id="trip-group" ${workType !== 'businessTrip' ? 'style="display:none"' : ''}>
+      <label class="form-label">출장지</label>
+      <input class="form-input" type="text" id="edit-trip" value="${tripDest}" placeholder="출장지 입력">
     </div>
     <div class="form-group">
       <label class="form-label">메모</label>
@@ -373,6 +383,8 @@ function showRecordEdit(date, rec) {
     btn.onclick = () => {
       selectedWt = btn.dataset.wt;
       document.querySelectorAll('#wt-select .wt-btn').forEach(b => b.classList.toggle('selected', b === btn));
+      const tripGroup = document.getElementById('trip-group');
+      if (tripGroup) tripGroup.style.display = selectedWt === 'businessTrip' ? '' : 'none';
     };
   });
 
@@ -380,6 +392,7 @@ function showRecordEdit(date, rec) {
     const ci = document.getElementById('edit-checkin').value;
     const co = document.getElementById('edit-checkout').value;
     const memo = document.getElementById('edit-memo').value;
+    const tripDestVal = document.getElementById('edit-trip')?.value || '';
 
     const roundedCi = ci ? calc.formatTime(calc.roundTo15(timeToMinutes(ci))) : null;
     const roundedCo = co ? calc.formatTime(calc.roundTo15(timeToMinutes(co))) : null;
@@ -389,7 +402,8 @@ function showRecordEdit(date, rec) {
       workType: selectedWt,
       checkIn: roundedCi || null,
       checkOut: roundedCo || null,
-      memo: memo || null,
+      tripDestination: selectedWt === 'businessTrip' ? (tripDestVal || null) : null,
+      memo: selectedWt !== 'businessTrip' ? (memo || null) : null,
     });
     closeModal();
     companyHolidays = await db.getCompanyHolidays();
@@ -458,9 +472,16 @@ async function renderCalendar(main) {
       }
     }
 
+    const pubHoliName = KOREAN_HOLIDAYS[k];
+    const compHoliName = companyHolidays[k];
+    let holiNameHtml = '';
+    if (pubHoliName) holiNameHtml = `<div class="cal-holi">${pubHoliName}</div>`;
+    else if (compHoliName) holiNameHtml = `<div class="cal-holi" style="color:var(--green)">${compHoliName}</div>`;
+
     html += `
       <div class="cal-cell ${cellClass}" data-date="${k}">
         <div class="cal-day ${dayClass}">${d}</div>
+        ${holiNameHtml}
         <div class="cal-times">${timesHtml}</div>
       </div>`;
   }
@@ -549,6 +570,72 @@ async function showAddHoliday() {
   };
 }
 
+// ─── LEAVE ────────────────────────────────────────────
+async function renderLeave(main) {
+  const totalStr = await db.getSetting('total_annual_leave') || '18';
+  const total = parseFloat(totalStr);
+  const records = await db.getAllRecords();
+
+  const leaveTypes = ['annualLeave', 'halfDay', 'quarterDay', 'doubleQuarterDay'];
+  const leaveRecords = records.filter(r => leaveTypes.includes(r.workType));
+  leaveRecords.sort((a, b) => b.date.localeCompare(a.date));
+
+  let used = 0;
+  leaveRecords.forEach(r => {
+    if (r.workType === 'annualLeave') used += 1;
+    else if (r.workType === 'halfDay') used += 0.5;
+    else if (r.workType === 'quarterDay') used += 0.25;
+    else if (r.workType === 'doubleQuarterDay') used += 0.5;
+  });
+
+  const remaining = total - used;
+  const pct = total > 0 ? Math.min(100, used / total * 100).toFixed(1) : 0;
+
+  let html = `
+    <div class="card">
+      <div class="card-title">연차 현황</div>
+      <div class="stat-row">
+        <div class="stat-item">
+          <span class="stat-label">총 연차</span>
+          <span class="stat-value big">${total}일</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">사용</span>
+          <span class="stat-value big" style="color:var(--orange)">${used}일</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">잔여</span>
+          <span class="stat-value big" style="color:${remaining < 0 ? 'var(--red)' : 'var(--green)'}">${remaining}일</span>
+        </div>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar" style="width:${pct}%;background:var(--orange)"></div>
+      </div>
+    </div>`;
+
+  if (leaveRecords.length === 0) {
+    html += `<div class="card"><div style="color:var(--text-2);text-align:center;padding:20px 0">사용한 연차가 없습니다</div></div>`;
+  } else {
+    html += `<div class="card">`;
+    leaveRecords.forEach(r => {
+      const d = new Date(r.date + 'T00:00:00');
+      const label = `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')} (${weekdayLabel(d)})`;
+      const wt = calc.WORK_TYPES[r.workType];
+      const days = r.workType === 'annualLeave' ? 1 : r.workType === 'halfDay' ? 0.5 : r.workType === 'quarterDay' ? 0.25 : 0.5;
+      html += `
+        <div class="holi-item">
+          <div>
+            <div class="holi-date">${label}</div>
+            <div class="holi-name" style="color:${wt.color}">${wt.label} (${days}일)</div>
+          </div>
+        </div>`;
+    });
+    html += `</div>`;
+  }
+
+  main.innerHTML = html;
+}
+
 // ─── SETTINGS ─────────────────────────────────────────
 async function renderSettings(main) {
   const totalLeave = await db.getSetting('total_annual_leave') || '18';
@@ -591,7 +678,7 @@ async function exportCSV() {
       r.checkOut || '',
       worked !== null ? calc.formatTime(worked) : '',
       calc.formatTime(ot),
-      r.memo || '',
+      r.tripDestination || r.memo || '',
     ].join(',');
   });
 

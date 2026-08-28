@@ -169,6 +169,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .cal-time.ci { color: var(--primary); }
 .cal-time.co { color: var(--orange); }
 .cal-wt { font-size: 9px; text-align: center; margin-top: 2px; font-weight: 600; }
+.cal-holi { font-size: 8px; color: #c62828; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: 1px; }
 
 /* ─── Modal ─── */
 #modal-overlay {
