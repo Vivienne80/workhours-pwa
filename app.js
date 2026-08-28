@@ -7,6 +7,7 @@ let currentView = 'home';
 let calendarDate = new Date();  // year/month shown in calendar
 let realtimeTimer = null;
 let companyHolidays = {};
+let plannedCheckout = null;   // 퇴근 예측 카드 예정 퇴근시각
 
 // ─── Boot ─────────────────────────────────────────────
 async function boot() {
@@ -94,7 +95,14 @@ async function renderHome(main) {
 
   const hasCoreToday = now.getDay() >= 2 && now.getDay() <= 4; // Tue-Thu
   const stdOut = calc.checkoutStandard(checkIn);
-  const minOut = calc.checkoutMinimum(checkIn, monthlyOT, hasCoreToday);
+  const minOut = calc.checkoutMinimum(checkIn, monthlyOT.diff, hasCoreToday);
+
+  // 퇴근 예측: 출근 후 미퇴근 시 초기화
+  if (checkIn && !checkOut) {
+    if (!plannedCheckout) plannedCheckout = minOut;
+  } else {
+    plannedCheckout = null;
+  }
 
   // Realtime work
   const realtimeMin = calcRealtimeOrFinal(rec);
@@ -137,6 +145,39 @@ async function renderHome(main) {
           <span class="stat-value" style="color:var(--text-2)">${minOut}</span>
         </div>
       </div>`;
+
+  // ── 퇴근 예측 카드 ──
+  const planned = plannedCheckout;
+  if (planned) {
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const plannedMin = timeToMinutes(planned);
+    const remaining = Math.max(0, plannedMin - nowMin);
+    const tempRec = { checkIn, checkOut: planned, workType };
+    const expectedWork = calc.calcDailyWork(tempRec);
+    const neededToday = Math.max(0, 8 * 60 - monthlyOT.diff);
+    const overtimeDiff = expectedWork !== null ? expectedWork - neededToday : null;
+    html += `
+      <div class="card" style="padding:14px 16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:14px;font-weight:700">퇴근 예측</span>
+          <button id="btn-planned" style="background:none;border:1.5px solid var(--border);border-radius:8px;padding:4px 12px;font-size:16px;font-weight:700;color:var(--text);cursor:pointer">${planned}</button>
+        </div>
+        <div class="stat-row">
+          <div class="stat-item">
+            <span class="stat-label">남은 시간</span>
+            <span class="stat-value" style="color:var(--primary)">${calc.formatTime(remaining)}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">예상 실근무</span>
+            <span class="stat-value">${expectedWork !== null ? calc.formatTime(expectedWork) : '--:--'}</span>
+          </div>
+          ${overtimeDiff !== null ? `<div class="stat-item">
+            <span class="stat-label">${overtimeDiff < 0 ? '미달' : '초과'}</span>
+            <span class="stat-value" style="color:${overtimeDiff < 0 ? 'var(--red)' : 'var(--orange)'}">${overtimeDiff < 0 ? '-' : '+'}${calc.formatTime(Math.abs(overtimeDiff))}</span>
+          </div>` : ''}
+        </div>
+      </div>`;
+  }
   } else if (checkIn && checkOut) {
     const worked = calc.calcDailyWork(rec);
     const ot = calc.calcOvertime(rec);
@@ -210,14 +251,22 @@ async function renderHome(main) {
 
   // Monthly overtime card
   if (now.getDate() > 1) {
-    const diff = monthlyOT;
+    const { worked: mWorked, base: mBase, diff: mDiff } = monthlyOT;
     html += `
       <div class="card">
         <div class="card-title">${now.getMonth()+1}월 누적 (어제까지)</div>
         <div class="stat-row">
           <div class="stat-item">
-            <span class="stat-label">${diff < 0 ? '미달' : '초과'}</span>
-            <span class="stat-value big" style="color:${diff < 0 ? 'var(--red)' : 'var(--green)'}">${diff < 0 ? '-' : '+'}${calc.formatTime(Math.abs(diff))}</span>
+            <span class="stat-label">실근무</span>
+            <span class="stat-value" style="color:var(--primary)">${calc.formatTime(mWorked)}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">기준</span>
+            <span class="stat-value" style="color:var(--text-2)">${calc.formatTime(mBase)}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">${mDiff < 0 ? '미달' : '초과'}</span>
+            <span class="stat-value" style="color:${mDiff < 0 ? 'var(--red)' : 'var(--green)'}">${mDiff < 0 ? '-' : '+'}${calc.formatTime(Math.abs(mDiff))}</span>
           </div>
         </div>
       </div>`;
@@ -229,6 +278,15 @@ async function renderHome(main) {
   document.getElementById('btn-checkin').onclick = () => checkInOut('in', rec);
   document.getElementById('btn-checkout').onclick = () => checkInOut('out', rec);
   document.getElementById('btn-edit').onclick = () => showRecordEdit(today, rec);
+  const btnPlanned = document.getElementById('btn-planned');
+  if (btnPlanned) {
+    btnPlanned.onclick = () => {
+      const picked = promptTime('예정 퇴근 시각을 입력하세요', plannedCheckout || '--:--');
+      if (!picked) return;
+      plannedCheckout = calc.formatTime(calc.roundTo15(timeToMinutes(picked)));
+      renderView('home');
+    };
+  }
 }
 
 function calcRealtimeOrFinal(rec) {
@@ -240,7 +298,7 @@ function calcRealtimeOrFinal(rec) {
 
 async function calcMonthlyOvertimeToYesterday() {
   const now = new Date();
-  if (now.getDate() === 1) return 0;
+  if (now.getDate() === 1) return { worked: 0, base: 0, diff: 0 };
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
 
@@ -267,7 +325,7 @@ async function calcMonthlyOvertimeToYesterday() {
       base += 8 * 60;
     }
   }
-  return worked - base;
+  return { worked, base, diff: worked - base };
 }
 
 async function calcWeekly() {
@@ -571,29 +629,50 @@ async function showAddHoliday() {
 }
 
 // ─── LEAVE ────────────────────────────────────────────
+let leaveYear = (() => {
+  const now = new Date();
+  return now.getMonth() >= 2 ? now.getFullYear() : now.getFullYear() - 1; // 3월(idx=2) 이상이면 올해
+})();
+
 async function renderLeave(main) {
   const totalStr = await db.getSetting('total_annual_leave') || '18';
   const total = parseFloat(totalStr);
-  const records = await db.getAllRecords();
+
+  // 연차연도: leaveYear.3.1 ~ (leaveYear+1).2.28(29)
+  const from = `${leaveYear}-03-01`;
+  const to = `${leaveYear+1}-02-29`; // getRecords는 범위 초과해도 DB에서 필터
+  const records = await db.getRecords(from, to);
 
   const leaveTypes = ['annualLeave', 'halfDay', 'quarterDay', 'doubleQuarterDay'];
   const leaveRecords = records.filter(r => leaveTypes.includes(r.workType));
   leaveRecords.sort((a, b) => b.date.localeCompare(a.date));
 
-  let used = 0;
+  let used = 0, annualCount = 0, halfCount = 0, quarterCount = 0;
   leaveRecords.forEach(r => {
-    if (r.workType === 'annualLeave') used += 1;
-    else if (r.workType === 'halfDay') used += 0.5;
-    else if (r.workType === 'quarterDay') used += 0.25;
-    else if (r.workType === 'doubleQuarterDay') used += 0.5;
+    if (r.workType === 'annualLeave') { used += 1; annualCount++; }
+    else if (r.workType === 'halfDay') { used += 0.5; halfCount++; }
+    else if (r.workType === 'quarterDay') { used += 0.25; quarterCount++; }
+    else if (r.workType === 'doubleQuarterDay') { used += 0.5; quarterCount++; }
   });
 
   const remaining = total - used;
   const pct = total > 0 ? Math.min(100, used / total * 100).toFixed(1) : 0;
+  const usedStr = used % 1 === 0 ? `${used}일` : `${used}일`;
+  const remStr = remaining % 1 === 0 ? `${remaining}일` : `${remaining}일`;
+
+  // 연도 선택 옵션 (최근 5개 연차연도)
+  const nowYear = new Date().getFullYear();
+  const baseYear = new Date().getMonth() >= 2 ? nowYear : nowYear - 1;
+  const yearOptions = Array.from({length: 5}, (_, i) => baseYear - i)
+    .map(y => `<option value="${y}" ${y === leaveYear ? 'selected' : ''}>${y}년 (${y}.3~${y+1}.2)</option>`)
+    .join('');
 
   let html = `
     <div class="card">
-      <div class="card-title">연차 현황</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <span style="font-size:13px;font-weight:600;color:var(--text-2)">연차 현황</span>
+        <select id="leave-year-sel" style="border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:12px;background:var(--bg);color:var(--text)">${yearOptions}</select>
+      </div>
       <div class="stat-row">
         <div class="stat-item">
           <span class="stat-label">총 연차</span>
@@ -601,25 +680,26 @@ async function renderLeave(main) {
         </div>
         <div class="stat-item">
           <span class="stat-label">사용</span>
-          <span class="stat-value big" style="color:var(--orange)">${used}일</span>
+          <span class="stat-value big" style="color:var(--orange)">${usedStr}</span>
         </div>
         <div class="stat-item">
           <span class="stat-label">잔여</span>
-          <span class="stat-value big" style="color:${remaining < 0 ? 'var(--red)' : 'var(--green)'}">${remaining}일</span>
+          <span class="stat-value big" style="color:${remaining < 0 ? 'var(--red)' : 'var(--green)'}">${remStr}</span>
         </div>
       </div>
+      <div style="font-size:11px;color:var(--text-2);text-align:center;margin-top:6px">연차 ${annualCount} + 반차 ${halfCount} + 반반차 ${quarterCount}</div>
       <div class="progress-wrap">
         <div class="progress-bar" style="width:${pct}%;background:var(--orange)"></div>
       </div>
     </div>`;
 
   if (leaveRecords.length === 0) {
-    html += `<div class="card"><div style="color:var(--text-2);text-align:center;padding:20px 0">사용한 연차가 없습니다</div></div>`;
+    html += `<div class="card"><div style="color:var(--text-2);text-align:center;padding:20px 0">연차/반차 기록이 없습니다</div></div>`;
   } else {
     html += `<div class="card">`;
     leaveRecords.forEach(r => {
       const d = new Date(r.date + 'T00:00:00');
-      const label = `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')} (${weekdayLabel(d)})`;
+      const label = `${r.date} (${weekdayLabel(d)})`;
       const wt = calc.WORK_TYPES[r.workType];
       const days = r.workType === 'annualLeave' ? 1 : r.workType === 'halfDay' ? 0.5 : r.workType === 'quarterDay' ? 0.25 : 0.5;
       html += `
@@ -634,6 +714,11 @@ async function renderLeave(main) {
   }
 
   main.innerHTML = html;
+
+  document.getElementById('leave-year-sel').onchange = async (e) => {
+    leaveYear = parseInt(e.target.value);
+    await renderLeave(main);
+  };
 }
 
 // ─── SETTINGS ─────────────────────────────────────────
