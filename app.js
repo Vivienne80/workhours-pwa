@@ -8,6 +8,7 @@ let calendarDate = new Date();  // year/month shown in calendar
 let realtimeTimer = null;
 let companyHolidays = {};
 let plannedCheckout = null;   // 퇴근 예측 카드 예정 퇴근시각
+let selectedCalendarDate = null; // 달력에서 선택한 날짜
 
 // ─── Boot ─────────────────────────────────────────────
 async function boot() {
@@ -399,12 +400,14 @@ function showRecordEdit(date, rec) {
   const d = new Date(date + 'T00:00:00');
   const title = `${d.getMonth()+1}/${d.getDate()} (${weekdayLabel(d)}) 수정`;
   const workType = rec.workType || 'normal';
+  const isLeaveType = (wt) => wt === 'annualLeave' || wt === 'holiday';
 
   const wtBtns = Object.entries(calc.WORK_TYPES).map(([k,v]) =>
     `<button class="wt-btn ${k === workType ? 'selected' : ''}" data-wt="${k}">${v.label}</button>`
   ).join('');
 
   const tripDest = rec.tripDestination || '';
+  const hideTime = isLeaveType(workType);
 
   const modalHtml = `
     <button class="modal-close" id="modal-close">✕</button>
@@ -414,13 +417,27 @@ function showRecordEdit(date, rec) {
       <label class="form-label">근무 유형</label>
       <div class="wt-select" id="wt-select">${wtBtns}</div>
     </div>
-    <div class="form-group">
-      <label class="form-label">출근</label>
-      <input class="form-input" type="time" id="edit-checkin" value="${rec.checkIn || ''}">
-    </div>
-    <div class="form-group">
-      <label class="form-label">퇴근</label>
-      <input class="form-input" type="time" id="edit-checkout" value="${rec.checkOut || ''}">
+    <div id="time-group" ${hideTime ? 'style="display:none"' : ''}>
+      <div class="form-group">
+        <label class="form-label">출근</label>
+        <input class="form-input" type="time" id="edit-checkin" value="${rec.checkIn || ''}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">퇴근</label>
+        <input class="form-input" type="time" id="edit-checkout" value="${rec.checkOut || ''}">
+      </div>
+      <div id="calc-preview" style="display:none;background:var(--primary-light);border-radius:8px;padding:10px 14px;margin-bottom:14px">
+        <div class="stat-row">
+          <div class="stat-item">
+            <span class="stat-label">실근무</span>
+            <span id="preview-worked" class="stat-value" style="font-size:18px;color:var(--primary)">--:--</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">초과</span>
+            <span id="preview-ot" class="stat-value" style="font-size:18px;color:var(--orange)">--:--</span>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="form-group" id="trip-group" ${workType !== 'businessTrip' ? 'style="display:none"' : ''}>
       <label class="form-label">출장지</label>
@@ -437,24 +454,50 @@ function showRecordEdit(date, rec) {
 
   openModal(modalHtml);
 
+  function updateCalcPreview() {
+    const ci = document.getElementById('edit-checkin')?.value;
+    const co = document.getElementById('edit-checkout')?.value;
+    const preview = document.getElementById('calc-preview');
+    if (!ci || !co || !preview) return;
+    const tempRec = { checkIn: ci, checkOut: co, workType: selectedWt };
+    const worked = calc.calcDailyWork(tempRec);
+    const ot = worked !== null ? Math.max(0, worked - calc.baseWorkMinutes(selectedWt)) : 0;
+    if (worked !== null) {
+      preview.style.display = '';
+      document.getElementById('preview-worked').textContent = calc.formatTime(worked);
+      document.getElementById('preview-ot').textContent = calc.formatTime(ot);
+      document.getElementById('preview-ot').style.color = ot > 0 ? 'var(--orange)' : 'var(--text-2)';
+    } else {
+      preview.style.display = 'none';
+    }
+  }
+
   let selectedWt = workType;
   document.querySelectorAll('#wt-select .wt-btn').forEach(btn => {
     btn.onclick = () => {
       selectedWt = btn.dataset.wt;
       document.querySelectorAll('#wt-select .wt-btn').forEach(b => b.classList.toggle('selected', b === btn));
+      const timeGroup = document.getElementById('time-group');
+      if (timeGroup) timeGroup.style.display = isLeaveType(selectedWt) ? 'none' : '';
       const tripGroup = document.getElementById('trip-group');
       if (tripGroup) tripGroup.style.display = selectedWt === 'businessTrip' ? '' : 'none';
+      updateCalcPreview();
     };
   });
 
+  document.getElementById('edit-checkin')?.addEventListener('change', updateCalcPreview);
+  document.getElementById('edit-checkout')?.addEventListener('change', updateCalcPreview);
+  updateCalcPreview();
+
   document.getElementById('edit-save').onclick = async () => {
-    const ci = document.getElementById('edit-checkin').value;
-    const co = document.getElementById('edit-checkout').value;
+    const ci = document.getElementById('edit-checkin')?.value;
+    const co = document.getElementById('edit-checkout')?.value;
     const memo = document.getElementById('edit-memo').value;
     const tripDestVal = document.getElementById('edit-trip')?.value || '';
 
-    const roundedCi = ci ? calc.formatTime(calc.roundTo15(timeToMinutes(ci))) : null;
-    const roundedCo = co ? calc.formatTime(calc.roundTo15(timeToMinutes(co))) : null;
+    const leave = isLeaveType(selectedWt);
+    const roundedCi = (!leave && ci) ? calc.formatTime(calc.roundTo15(timeToMinutes(ci))) : null;
+    const roundedCo = (!leave && co) ? calc.formatTime(calc.roundTo15(timeToMinutes(co))) : null;
 
     await db.saveRecord({
       date,
@@ -462,7 +505,7 @@ function showRecordEdit(date, rec) {
       checkIn: roundedCi || null,
       checkOut: roundedCo || null,
       tripDestination: selectedWt === 'businessTrip' ? (tripDestVal || null) : null,
-      memo: selectedWt !== 'businessTrip' ? (memo || null) : null,
+      memo: memo || null,
     });
     closeModal();
     companyHolidays = await db.getCompanyHolidays();
@@ -545,26 +588,96 @@ async function renderCalendar(main) {
       </div>`;
   }
 
-  html += `</div>`;
+  html += `</div><div id="cal-detail-panel"></div>`;
   main.innerHTML = html;
 
   document.getElementById('cal-prev').onclick = async () => {
     calendarDate.setMonth(calendarDate.getMonth() - 1);
+    selectedCalendarDate = null;
     await renderCalendar(main);
   };
   document.getElementById('cal-next').onclick = async () => {
     calendarDate.setMonth(calendarDate.getMonth() + 1);
+    selectedCalendarDate = null;
     await renderCalendar(main);
   };
 
-  main.querySelectorAll('.cal-cell[data-date]').forEach(cell => {
-    cell.onclick = async () => {
-      const k = cell.dataset.date;
-      const cellDate = new Date(k + 'T00:00:00');
-      const cellDefault = isHoliday(cellDate) ? 'holiday' : 'normal';
-      const r = recMap[k] || { date: k, workType: cellDefault };
-      showRecordEdit(k, r);
+  function renderCalDetail(k) {
+    selectedCalendarDate = k;
+    main.querySelectorAll('.cal-cell[data-date]').forEach(c =>
+      c.style.outline = c.dataset.date === k ? '2px solid var(--primary)' : '');
+    const panel = document.getElementById('cal-detail-panel');
+    if (!panel) return;
+    const r = recMap[k];
+    const cellDate = new Date(k + 'T00:00:00');
+    const pubHoli = KOREAN_HOLIDAYS[k];
+    const compHoli = companyHolidays[k];
+
+    let pHtml = `<div class="card" style="margin-top:8px">`;
+
+    if (pubHoli) {
+      pHtml += `<div style="font-size:12px;color:#c62828;margin-bottom:8px">📅 ${pubHoli}</div>`;
+    }
+    if (compHoli) {
+      pHtml += `<div style="font-size:12px;color:var(--green);margin-bottom:8px">🏢 회사 휴일 · ${compHoli}</div>`;
+    }
+
+    if (!r) {
+      pHtml += `<div style="color:var(--text-2);font-size:13px;text-align:center;padding:8px 0">기록 없음${isHoliday(cellDate) ? ' (휴일)' : ''}</div>`;
+    } else {
+      const wt = calc.WORK_TYPES[r.workType] || calc.WORK_TYPES.normal;
+      pHtml += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span class="badge" style="background:${wt.color}">${wt.label}</span>
+        ${r.tripDestination ? `<span style="font-size:13px;color:var(--text-2)">· ${r.tripDestination}</span>` : ''}
+      </div>`;
+      if (r.checkIn || r.checkOut) {
+        pHtml += `<div class="stat-row" style="justify-content:flex-start;gap:24px;margin-bottom:8px">
+          <div class="stat-item">
+            <span class="stat-label">출근</span>
+            <span class="stat-value" style="font-size:18px;color:var(--primary)">${r.checkIn || '--:--'}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">퇴근</span>
+            <span class="stat-value" style="font-size:18px;color:var(--orange)">${r.checkOut || '--:--'}</span>
+          </div>`;
+        const worked = calc.calcDailyWork(r);
+        const ot = calc.calcOvertime(r);
+        if (worked !== null) {
+          pHtml += `<div class="stat-item">
+            <span class="stat-label">실근무</span>
+            <span class="stat-value" style="font-size:18px">${calc.formatTime(worked)}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">초과</span>
+            <span class="stat-value" style="font-size:18px;color:${ot > 0 ? 'var(--orange)' : 'var(--text-2)'}">${calc.formatTime(ot)}</span>
+          </div>`;
+        }
+        pHtml += `</div>`;
+      }
+      if (r.memo) {
+        pHtml += `<div style="font-size:13px;color:var(--text-2)">메모: ${r.memo}</div>`;
+      }
+    }
+
+    pHtml += `<button class="btn btn-secondary" id="cal-detail-edit" style="margin-top:10px;height:38px;font-size:13px">✏️ 편집</button>`;
+    pHtml += `</div>`;
+    panel.innerHTML = pHtml;
+
+    document.getElementById('cal-detail-edit').onclick = () => {
+      const cellDate2 = new Date(k + 'T00:00:00');
+      const cellDefault = isHoliday(cellDate2) ? 'holiday' : 'normal';
+      showRecordEdit(k, recMap[k] || { date: k, workType: cellDefault });
     };
+  }
+
+  if (selectedCalendarDate && recMap[selectedCalendarDate] !== undefined) {
+    renderCalDetail(selectedCalendarDate);
+  } else if (selectedCalendarDate) {
+    renderCalDetail(selectedCalendarDate);
+  }
+
+  main.querySelectorAll('.cal-cell[data-date]').forEach(cell => {
+    cell.onclick = () => renderCalDetail(cell.dataset.date);
   });
 }
 
