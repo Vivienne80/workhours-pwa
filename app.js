@@ -9,6 +9,8 @@ let realtimeTimer = null;
 let companyHolidays = {};
 let plannedCheckout = null;   // 퇴근 예측 카드 예정 퇴근시각
 let selectedCalendarDate = null; // 달력에서 선택한 날짜
+let monthlyYear = new Date().getFullYear();
+let monthlyMonth = new Date().getMonth() + 1;
 
 // ─── Boot ─────────────────────────────────────────────
 async function boot() {
@@ -53,6 +55,10 @@ async function renderView(view) {
       action.textContent = '+ 추가';
       action.onclick = showAddHoliday;
       await renderHolidays(main);
+      break;
+    case 'monthly':
+      title.textContent = '월간 현황';
+      await renderMonthly(main);
       break;
     case 'leave':
       title.textContent = '연차';
@@ -744,6 +750,183 @@ async function showAddHoliday() {
   };
 }
 
+// ─── MONTHLY ──────────────────────────────────────────
+function isoWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+async function renderMonthly(main) {
+  const from = `${monthlyYear}-${String(monthlyMonth).padStart(2,'0')}-01`;
+  const lastDay = new Date(monthlyYear, monthlyMonth, 0).getDate();
+  const to = `${monthlyYear}-${String(monthlyMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+  const records = await db.getRecords(from, to);
+
+  // 이번달 집계
+  let totalWork = 0, totalBase = 0, workDays = 0;
+  const weekMap = {};
+
+  // 오늘 미퇴근 실시간 근무 반영
+  const now = new Date();
+  const todayKey = dateKey(now);
+
+  records.forEach(r => {
+    const wt = r.workType;
+    if (wt === 'annualLeave' || wt === 'holiday') return;
+    const base = calc.baseWorkMinutes(wt);
+    let w = 0;
+    if (r.date === todayKey && r.checkIn && !r.checkOut) {
+      w = calc.calcTodayRealtime(r.checkIn);
+    } else {
+      w = calc.calcDailyWork(r) || 0;
+    }
+    totalWork += w;
+    totalBase += base;
+    if (w > 0) workDays++;
+
+    // 주별 집계
+    const d = new Date(r.date + 'T00:00:00');
+    const wn = isoWeek(d);
+    if (!weekMap[wn]) weekMap[wn] = { work: 0, base: 0 };
+    weekMap[wn].work += w;
+    weekMap[wn].base += base;
+  });
+
+  const totalDiff = totalWork - totalBase;
+
+  // 연차 (회계연도 기준)
+  const totalLeaveStr = await db.getSetting('total_annual_leave') || '18';
+  const totalLeave = parseFloat(totalLeaveStr);
+  const fy = monthlyMonth >= 3 ? monthlyYear : monthlyYear - 1;
+  const fyRecords = await db.getRecords(`${fy}-03-01`, `${fy+1}-02-29`);
+  let fyUsed = 0, fyAnnual = 0, fyHalf = 0, fyQuarter = 0;
+  fyRecords.forEach(r => {
+    if (r.workType === 'annualLeave') { fyUsed += 1; fyAnnual++; }
+    else if (r.workType === 'halfDay') { fyUsed += 0.5; fyHalf++; }
+    else if (r.workType === 'quarterDay') { fyUsed += 0.25; fyQuarter++; }
+    else if (r.workType === 'doubleQuarterDay') { fyUsed += 0.5; fyQuarter++; }
+  });
+  const fyRemaining = totalLeave - fyUsed;
+
+  // 월 내보내기
+  function exportMonth() {
+    if (records.length === 0) { alert('내보낼 데이터가 없습니다'); return; }
+    const sortedRecs = [...records].sort((a,b) => a.date.localeCompare(b.date));
+    const header = '날짜,근무유형,출근,퇴근,실근무시간,초과근무,메모';
+    const rows = sortedRecs.map(r => {
+      const wt = calc.WORK_TYPES[r.workType]?.label || r.workType;
+      const worked = calc.calcDailyWork(r);
+      const ot = calc.calcOvertime(r);
+      return [r.date, wt, r.checkIn||'', r.checkOut||'',
+        worked !== null ? calc.formatTime(worked) : '', calc.formatTime(ot),
+        r.tripDestination || r.memo || ''].join(',');
+    });
+    const csv = '﻿' + [header, ...rows].join('\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `workhours_${monthlyYear}${String(monthlyMonth).padStart(2,'0')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // 주별 표
+  const weekEntries = Object.entries(weekMap).sort((a,b) => Number(a[0]) - Number(b[0]));
+
+  let html = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:4px">
+        <button id="mon-prev" style="background:none;border:none;font-size:22px;color:var(--primary);cursor:pointer;padding:4px 6px">‹</button>
+        <span style="font-size:17px;font-weight:700">${monthlyYear}년 ${monthlyMonth}월</span>
+        <button id="mon-next" style="background:none;border:none;font-size:22px;color:var(--primary);cursor:pointer;padding:4px 6px">›</button>
+      </div>
+      <button id="mon-export" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:12px;color:var(--text-2);cursor:pointer">CSV</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">근무 현황</div>
+      <div class="stat-row">
+        <div class="stat-item">
+          <span class="stat-label">근무일</span>
+          <span class="stat-value big">${workDays}일</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">실근무</span>
+          <span class="stat-value big" style="color:var(--primary)">${calc.formatTime(totalWork)}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">${totalDiff < 0 ? '미달' : '초과근무'}</span>
+          <span class="stat-value big" style="color:${totalDiff < 0 ? 'var(--red)' : 'var(--orange)'}">${totalDiff < 0 ? '-' : '+'}${calc.formatTime(Math.abs(totalDiff))}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">${fy}년 연차 현황 (${fy}.03~${fy+1}.02)</div>
+      <div class="stat-row">
+        <div class="stat-item">
+          <span class="stat-label">총 연차</span>
+          <span class="stat-value big">${totalLeave}일</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">사용</span>
+          <span class="stat-value big" style="color:var(--orange)">${fyUsed}일</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">잔여</span>
+          <span class="stat-value big" style="color:${fyRemaining <= 5 ? 'var(--red)' : 'var(--green)'}">${fyRemaining}일</span>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text-2);text-align:center;margin-top:6px">연차 ${fyAnnual}일 + 반차 ${fyHalf}회(${fyHalf*0.5}일) + 반반차 ${fyQuarter}회</div>
+      <div class="progress-wrap">
+        <div class="progress-bar" style="width:${Math.min(100, fyUsed/totalLeave*100).toFixed(1)}%;background:${fyRemaining <= 5 ? 'var(--red)' : 'var(--green)'}"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">주별 근무시간</div>`;
+
+  if (weekEntries.length === 0) {
+    html += `<div style="color:var(--text-2);text-align:center;padding:12px 0">데이터 없음</div>`;
+  } else {
+    weekEntries.forEach(([wn, {work, base}]) => {
+      const over52 = work > 52 * 60;
+      const pct = base > 0 ? Math.min(150, work / base * 100).toFixed(1) : 0;
+      const diff = work - base;
+      const barColor = over52 ? 'var(--red)' : work >= base ? 'var(--primary)' : 'var(--orange)';
+      html += `
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px${over52 ? ';background:rgba(198,40,40,0.07);border-radius:6px;padding:4px' : ''}">
+          ${over52 ? '<span style="font-size:12px">⚠️</span>' : ''}
+          <span style="font-size:13px;width:44px;color:${over52 ? 'var(--red)' : 'var(--text)'};font-weight:${over52?'700':'400'}">${wn}주차</span>
+          <div style="flex:1;background:var(--border);border-radius:4px;height:12px;overflow:hidden">
+            <div style="width:${pct}%;height:100%;background:${barColor};border-radius:4px"></div>
+          </div>
+          <span style="font-size:13px;width:50px;text-align:right;color:${over52?'var(--red)':'var(--text)'};font-weight:${over52?'700':'400'}">${calc.formatTime(work)}</span>
+          <span style="font-size:11px;width:52px;text-align:right;color:${diff<0?'var(--red)':'var(--green)'}">${diff<0?'':'+'}${calc.formatTime(diff)}</span>
+        </div>`;
+    });
+  }
+
+  html += `</div>`;
+  main.innerHTML = html;
+
+  document.getElementById('mon-prev').onclick = async () => {
+    if (monthlyMonth === 1) { monthlyMonth = 12; monthlyYear--; }
+    else monthlyMonth--;
+    await renderMonthly(main);
+  };
+  document.getElementById('mon-next').onclick = async () => {
+    if (monthlyMonth === 12) { monthlyMonth = 1; monthlyYear++; }
+    else monthlyMonth++;
+    await renderMonthly(main);
+  };
+  document.getElementById('mon-export').onclick = exportMonth;
+}
+
 // ─── LEAVE ────────────────────────────────────────────
 let leaveYear = (() => {
   const now = new Date();
@@ -853,13 +1036,49 @@ async function renderSettings(main) {
         <span class="settings-label">CSV 내보내기</span>
         <button class="btn btn-secondary" id="btn-export" style="flex:none;width:auto;padding:0 16px;height:36px;font-size:13px">내보내기</button>
       </div>
+      <div class="settings-item" style="border-top:none;padding-top:0">
+        <span class="settings-label">CSV 가져오기</span>
+        <button class="btn btn-secondary" id="btn-import" style="flex:none;width:auto;padding:0 16px;height:36px;font-size:13px">가져오기</button>
+        <input type="file" id="import-file-input" accept=".csv" style="display:none">
+      </div>
     </div>`;
 
   document.getElementById('set-leave').onchange = async (e) => {
     await db.setSetting('total_annual_leave', e.target.value);
   };
 
+  const rulesHtml = `
+    <div class="card">
+      <div class="card-title" style="margin-bottom:8px">근무 규정</div>
+      ${[
+        ['기준 근무시간','8시간/일'],
+        ['점심 시간','11:50~12:50, 1시간 자동 차감\n(반차·휴일근무 제외)'],
+        ['코어타임','화·수·목 10:00~14:00 의무 재실'],
+        ['출퇴근 단위','15분 단위'],
+        ['초과근무','실근무 − 8시간\n(휴일근무는 전부 초과)'],
+      ].map(([label, value]) => `
+        <div style="display:flex;padding:7px 0;border-bottom:1px solid var(--border)">
+          <span style="font-size:13px;color:var(--text-2);width:110px;flex-shrink:0">${label}</span>
+          <span style="font-size:13px;white-space:pre-line">${value}</span>
+        </div>`).join('')}
+    </div>
+    <div class="card">
+      <div class="card-title" style="margin-bottom:4px">앱 정보</div>
+      <div style="font-size:13px;color:var(--text-2)">근무시간 관리 PWA</div>
+      <div style="font-size:12px;color:var(--text-2);margin-top:2px">데이터는 브라우저 IndexedDB에 저장됩니다</div>
+    </div>`;
+
+  main.insertAdjacentHTML('beforeend', rulesHtml);
+
   document.getElementById('btn-export').onclick = exportCSV;
+  document.getElementById('btn-import').onclick = () => document.getElementById('import-file-input').click();
+  document.getElementById('import-file-input').onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const result = await importCSV(file);
+    alert(`가져오기 완료\n성공: ${result.imported}건\n건너뜀: ${result.skipped}건\n실패: ${result.failed}건`);
+    e.target.value = '';
+  };
 }
 
 async function exportCSV() {
@@ -891,6 +1110,73 @@ async function exportCSV() {
   a.download = `workhours_${dateKey(new Date())}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+async function importCSV(file) {
+  const text = await file.text();
+  const content = text.replace(/^﻿/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = content.split('\n').filter(l => l.trim());
+  if (lines.length < 2) return { imported: 0, skipped: 0, failed: 0 };
+
+  const header = parseCsvRow(lines[0]);
+  const dateIdx = header.findIndex(h => h.includes('날짜'));
+  const typeIdx = header.findIndex(h => h.includes('유형'));
+  const inIdx   = header.findIndex(h => h.includes('출근'));
+  const outIdx  = header.findIndex(h => h.includes('퇴근'));
+  const memoIdx = header.findIndex(h => h.includes('메모') || h.includes('목적지'));
+  if (dateIdx < 0) return { imported: 0, skipped: 0, failed: 0 };
+
+  const wtMap = {
+    '정상근무':'normal','근무일':'normal',
+    '출장':'businessTrip',
+    '재택':'remote','재택근무':'remote',
+    '반차':'halfDay',
+    '반반차':'quarterDay',
+    '반반차×2':'doubleQuarterDay',
+    '연차':'annualLeave',
+    '휴일근무':'holidayWork',
+    '휴일':'holiday',
+  };
+
+  let imported = 0, skipped = 0, failed = 0;
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCsvRow(lines[i]);
+    if (cols.length <= dateIdx) continue;
+    const date = cols[dateIdx].trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { failed++; continue; }
+    const wtStr = typeIdx >= 0 && cols[typeIdx] ? cols[typeIdx].trim() : '정상근무';
+    const workType = wtMap[wtStr] || 'normal';
+    const checkIn  = inIdx >= 0 ? (cols[inIdx]?.trim() || null) : null;
+    const checkOut = outIdx >= 0 ? (cols[outIdx]?.trim() || null) : null;
+    const memo     = memoIdx >= 0 ? (cols[memoIdx]?.trim() || null) : null;
+    const isLeave  = workType === 'annualLeave' || workType === 'holiday';
+    await db.saveRecord({
+      date,
+      workType,
+      checkIn:  isLeave ? null : checkIn,
+      checkOut: isLeave ? null : checkOut,
+      tripDestination: workType === 'businessTrip' ? memo : null,
+      memo: workType !== 'businessTrip' ? memo : null,
+    });
+    imported++;
+  }
+  return { imported, skipped, failed };
+}
+
+function parseCsvRow(line) {
+  const result = [];
+  let inQ = false, buf = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (inQ && line[i+1] === '"') { buf += '"'; i++; }
+      else inQ = !inQ;
+    } else if (c === ',' && !inQ) {
+      result.push(buf); buf = '';
+    } else buf += c;
+  }
+  result.push(buf);
+  return result;
 }
 
 // ─── Modal helpers ─────────────────────────────────────
